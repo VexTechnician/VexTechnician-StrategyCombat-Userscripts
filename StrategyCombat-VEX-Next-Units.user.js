@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         StrategyCombat - VEX Next Units
 // @namespace    vex.strategycombat.nextunits
-// @version      3.0
-// @description  Next unit unlocks with automatic mapjahr timing and automatic map change detection.
+// @version      4.0
+// @description  Next unit unlock countdown with continuous timing, automatic calibration, and automatic map-change detection.
 // @author       Vex + ChatGPT
-// @match        https://www.strategycombat.com/*
+// @match        https://www.strategycombat.com/?e=1
 // @run-at       document-idle
 // @grant        unsafeWindow
 // ==/UserScript==
@@ -27,7 +27,7 @@
     const NAME_ARRAY = 'pnam';
     const DESC_ARRAY = 'sinf';
 
-    const CALIBRATION_INTERVAL = 10000;
+    const SYNC_INTERVAL = 10000;
     const DISPLAY_INTERVAL = 1000;
 
     const YEAR_STEP = 0.001;
@@ -209,29 +209,46 @@
         [235,1969.7],
         [263,1982.5]
 
-    ].map(([index, year]) => ({
-        index,
-        year
-    })).sort(
-        (a, b) => a.year - b.year
-    );
+    ]
+        .map(([index, year]) => ({
+            index,
+            year
+        }))
+        .sort(
+            (a, b) =>
+                a.year - b.year
+        );
 
 
     // =========================================================
     // TIMING STATE
     // =========================================================
 
-    let secondsPerStep = START_RATE;
+    let secondsPerStep =
+        START_RATE;
+
+    /*
+     * Countdown anchor.
+     *
+     * IMPORTANT:
+     * This is NOT reset every 10 seconds.
+     */
 
     let anchorYear = null;
     let anchorTime = null;
 
-    let previousYear = null;
-    let previousTime = null;
+    /*
+     * Calibration observation.
+     *
+     * These are separate from the countdown anchor.
+     */
 
-    let currentMap = null;
+    let calibrationYear = null;
+    let calibrationTime = null;
 
     let samples = [];
+
+    let currentMap = null;
 
 
     // =========================================================
@@ -246,6 +263,7 @@
         if (
             typeof value === 'function'
         ) {
+
             try {
                 value =
                     value.call(W);
@@ -255,21 +273,15 @@
         value =
             await Promise.resolve(value);
 
-        /*
-         * Normal number.
-         */
 
         if (
             typeof value === 'number' &&
             Number.isFinite(value)
         ) {
+
             return value;
         }
 
-
-        /*
-         * Numeric string.
-         */
 
         if (
             typeof value === 'string'
@@ -292,12 +304,6 @@
         }
 
 
-        /*
-         * If mapnr happens to be an object,
-         * search its immediate properties for
-         * a plausible numeric map number.
-         */
-
         if (
             value &&
             typeof value === 'object'
@@ -315,6 +321,7 @@
                     n >= 0 &&
                     n < 100000
                 ) {
+
                     return n;
                 }
             }
@@ -337,6 +344,7 @@
         if (
             typeof value === 'function'
         ) {
+
             value =
                 value.call(W);
         }
@@ -349,6 +357,7 @@
             typeof value === 'number' &&
             Number.isFinite(value)
         ) {
+
             return value;
         }
 
@@ -364,14 +373,9 @@
 
             if (match) {
 
-                const n =
-                    Number(match[0]);
-
-                if (
-                    Number.isFinite(n)
-                ) {
-                    return n;
-                }
+                return Number(
+                    match[0]
+                );
             }
         }
 
@@ -393,6 +397,7 @@
                     n > 1900 &&
                     n < 2100
                 ) {
+
                     return n;
                 }
             }
@@ -406,13 +411,24 @@
 
 
     // =========================================================
-    // RESET TIMING
+    // START / RESET A NEW MAP
     // =========================================================
 
-    function resetTiming(year) {
+    function startNewMap(
+        map,
+        year
+    ) {
+
+        currentMap =
+            map;
 
         const now =
             performance.now();
+
+
+        /*
+         * The countdown starts here.
+         */
 
         anchorYear =
             year;
@@ -420,139 +436,195 @@
         anchorTime =
             now;
 
-        previousYear =
-            year;
-
-        previousTime =
-            now;
 
         /*
-         * Start a new calibration history for
-         * the new map.
-         *
-         * Keep the known 150.1 starting value.
+         * Calibration starts separately.
          */
 
-        samples = [];
+        calibrationYear =
+            year;
+
+        calibrationTime =
+            now;
+
+
+        /*
+         * Start the new map using the known
+         * starting estimate.
+         */
 
         secondsPerStep =
             START_RATE;
 
+
+        samples = [];
+
+
         console.log(
-            '[VEX] Timing reset for map:',
-            currentMap,
-            '| mapjahr:',
+            '[VEX] ================================='
+        );
+
+        console.log(
+            '[VEX] NEW MAP:',
+            map
+        );
+
+        console.log(
+            '[VEX] mapjahr:',
             year
+        );
+
+        console.log(
+            '[VEX] Countdown anchor reset.'
+        );
+
+        console.log(
+            '[VEX] ================================='
         );
     }
 
 
     // =========================================================
-    // RECORD YEAR
+    // CALIBRATE WITHOUT RESETTING COUNTDOWN
     // =========================================================
 
-    function recordYear(year) {
+    function calibrate(
+        year
+    ) {
 
         const now =
             performance.now();
 
 
         if (
-            previousYear !== null &&
-            previousTime !== null
+            calibrationYear === null ||
+            calibrationTime === null
         ) {
 
-            const yearDelta =
-                year -
-                previousYear;
+            calibrationYear =
+                year;
+
+            calibrationTime =
+                now;
+
+            return;
+        }
 
 
-            const timeDelta =
-                (
-                    now -
-                    previousTime
-                ) / 1000;
+        const yearDelta =
+            year -
+            calibrationYear;
 
+
+        const elapsed =
+            (
+                now -
+                calibrationTime
+            ) / 1000;
+
+
+        /*
+         * Only use positive mapjahr movement.
+         */
+
+        if (
+            yearDelta > 0 &&
+            elapsed > 0
+        ) {
+
+            const steps =
+                yearDelta /
+                YEAR_STEP;
+
+
+            const measuredRate =
+                elapsed /
+                steps;
+
+
+            /*
+             * Reject obviously bad measurements.
+             */
 
             if (
-                yearDelta > 0 &&
-                timeDelta > 0
+                measuredRate >= 100 &&
+                measuredRate <= 250
             ) {
 
-                const steps =
-                    yearDelta /
-                    YEAR_STEP;
+                samples.push(
+                    measuredRate
+                );
 
 
-                const rate =
-                    timeDelta /
-                    steps;
-
-
-                if (
-                    rate >= 100 &&
-                    rate <= 250
+                while (
+                    samples.length >
+                    MAX_SAMPLES
                 ) {
 
-                    samples.push(rate);
-
-
-                    while (
-                        samples.length >
-                        MAX_SAMPLES
-                    ) {
-                        samples.shift();
-                    }
-
-
-                    const sorted =
-                        [...samples].sort(
-                            (a, b) =>
-                                a - b
-                        );
-
-
-                    const middle =
-                        Math.floor(
-                            sorted.length / 2
-                        );
-
-
-                    secondsPerStep =
-                        sorted.length % 2
-                            ? sorted[middle]
-                            : (
-                                sorted[middle - 1] +
-                                sorted[middle]
-                            ) / 2;
-
-
-                    console.log(
-                        '[VEX] Calibration:',
-                        secondsPerStep.toFixed(2),
-                        'sec / 0.001'
-                    );
+                    samples.shift();
                 }
+
+
+                const sorted =
+                    [...samples].sort(
+                        (a, b) =>
+                            a - b
+                    );
+
+
+                const middle =
+                    Math.floor(
+                        sorted.length / 2
+                    );
+
+
+                const newRate =
+                    sorted.length % 2
+                        ? sorted[middle]
+                        : (
+                            sorted[middle - 1] +
+                            sorted[middle]
+                        ) / 2;
+
+
+                /*
+                 * IMPORTANT:
+                 *
+                 * We DO NOT touch anchorYear
+                 * or anchorTime here.
+                 *
+                 * This prevents the countdown
+                 * from jumping backward every
+                 * 10 seconds.
+                 */
+
+                secondsPerStep =
+                    newRate;
+
+
+                console.log(
+                    '[VEX] Calibration:',
+                    newRate.toFixed(3),
+                    'sec / 0.001'
+                );
             }
         }
 
 
-        anchorYear =
+        /*
+         * Update ONLY the calibration observation.
+         */
+
+        calibrationYear =
             year;
 
-        anchorTime =
-            now;
-
-        previousYear =
-            year;
-
-        previousTime =
+        calibrationTime =
             now;
     }
 
 
     // =========================================================
-    // ESTIMATED CURRENT YEAR
+    // ESTIMATE CURRENT GAME YEAR
     // =========================================================
 
     function estimatedYear() {
@@ -561,6 +633,7 @@
             anchorYear === null ||
             anchorTime === null
         ) {
+
             return null;
         }
 
@@ -584,19 +657,21 @@
 
 
     // =========================================================
-    // YEAR -> REAL SECONDS
+    // SECONDS UNTIL UNLOCK
     // =========================================================
 
-    function secondsUntil(targetYear) {
+    function secondsUntil(
+        targetYear
+    ) {
 
         const current =
             estimatedYear();
 
 
         if (
-            current === null ||
-            !Number.isFinite(targetYear)
+            current === null
         ) {
+
             return null;
         }
 
@@ -609,6 +684,7 @@
         if (
             difference <= 0
         ) {
+
             return 0;
         }
 
@@ -622,14 +698,17 @@
 
 
     // =========================================================
-    // FORMAT TIME
+    // FORMAT COUNTDOWN
     // =========================================================
 
-    function formatTime(seconds) {
+    function formatTime(
+        seconds
+    ) {
 
         if (
             seconds === null
         ) {
+
             return '—';
         }
 
@@ -637,6 +716,7 @@
         if (
             seconds <= 0
         ) {
+
             return 'READY';
         }
 
@@ -672,7 +752,7 @@
             minutes * 60;
 
 
-        const secs =
+        const secondsLeft =
             total;
 
 
@@ -688,7 +768,7 @@
                 .padStart(2, '0') +
             'm ' +
 
-            String(secs)
+            String(secondsLeft)
                 .padStart(2, '0') +
             's'
         );
@@ -696,10 +776,12 @@
 
 
     // =========================================================
-    // NAME LOOKUP
+    // UNIT NAME
     // =========================================================
 
-    function unitName(index) {
+    function unitName(
+        index
+    ) {
 
         const array =
             W[NAME_ARRAY];
@@ -727,10 +809,12 @@
 
 
     // =========================================================
-    // DESCRIPTION LOOKUP
+    // UNIT DESCRIPTION
     // =========================================================
 
-    function unitDescription(index) {
+    function unitDescription(
+        index
+    ) {
 
         const array =
             W[DESC_ARRAY];
@@ -752,12 +836,13 @@
 
 
     // =========================================================
-    // CREATE UI
+    // UI
     // =========================================================
 
     const host =
-        document.createElement('div');
-
+        document.createElement(
+            'div'
+        );
 
     host.id =
         'vex-next-units';
@@ -883,7 +968,7 @@
             }
 
             .time {
-                min-width:145px;
+                min-width:150px;
                 text-align:right;
                 font-size:11px;
                 font-variant-numeric:tabular-nums;
@@ -912,12 +997,6 @@
                 padding:10px;
                 color:#8a7550;
                 font-size:12px;
-            }
-
-            .maplabel {
-                color:#8a7550;
-                font-size:10px;
-                margin-left:5px;
             }
 
         </style>
@@ -954,16 +1033,24 @@
 
 
     const bar =
-        shadow.querySelector('.bar');
+        shadow.querySelector(
+            '.bar'
+        );
 
     const dot =
-        shadow.getElementById('dot');
+        shadow.getElementById(
+            'dot'
+        );
 
     const gameYearDisplay =
-        shadow.getElementById('gameyear');
+        shadow.getElementById(
+            'gameyear'
+        );
 
     const body =
-        shadow.getElementById('body');
+        shadow.getElementById(
+            'body'
+        );
 
 
     // =========================================================
@@ -979,15 +1066,13 @@
         if (
             year === null
         ) {
+
             return;
         }
 
 
         gameYearDisplay.textContent =
             year.toFixed(3);
-
-
-        body.replaceChildren();
 
 
         const upcoming =
@@ -1000,6 +1085,17 @@
                     0,
                     SHOW_UNITS
                 );
+
+
+        /*
+         * Rebuild the rows.
+         *
+         * This happens on map change and
+         * synchronization, but does NOT
+         * reset the countdown clock.
+         */
+
+        body.replaceChildren();
 
 
         if (
@@ -1117,7 +1213,9 @@
                 'countdown';
 
             countdown.dataset.year =
-                String(item.year);
+                String(
+                    item.year
+                );
 
 
             countdown.textContent =
@@ -1146,7 +1244,7 @@
 
 
     // =========================================================
-    // UPDATE COUNTDOWNS
+    // UPDATE ONLY THE COUNTDOWNS
     // =========================================================
 
     function updateDisplay() {
@@ -1158,6 +1256,7 @@
         if (
             year === null
         ) {
+
             return;
         }
 
@@ -1206,45 +1305,48 @@
 
 
             // =================================================
-            // MAP CHANGE DETECTED
+            // FIRST MAP
+            // =================================================
+
+            if (
+                currentMap === null
+            ) {
+
+                startNewMap(
+                    map,
+                    year
+                );
+
+
+                dot.className =
+                    'dot';
+
+
+                buildList();
+
+                return;
+            }
+
+
+            // =================================================
+            // MAP CHANGED
             // =================================================
 
             if (
                 map !== null &&
-                currentMap !== null &&
-                map !== currentMap
+                currentMap !== map
             ) {
 
                 console.log(
-                    '[VEX] ============================='
-                );
-
-                console.log(
-                    '[VEX] MAP CHANGE DETECTED:',
+                    '[VEX] MAP CHANGE:',
                     currentMap,
                     '->',
                     map
                 );
 
-                console.log(
-                    '[VEX] New mapjahr:',
-                    year
-                );
 
-                console.log(
-                    '[VEX] Rebuilding unit list...'
-                );
-
-                console.log(
-                    '[VEX] ============================='
-                );
-
-
-                currentMap =
-                    map;
-
-
-                resetTiming(
+                startNewMap(
+                    map,
                     year
                 );
 
@@ -1256,12 +1358,6 @@
                 buildList();
 
 
-                /*
-                 * Give the UI a moment to display
-                 * the map-change state, then return
-                 * to normal.
-                 */
-
                 setTimeout(
                     () => {
 
@@ -1269,12 +1365,13 @@
                             dot.className ===
                             'dot mapchange'
                         ) {
+
                             dot.className =
                                 'dot';
                         }
 
                     },
-                    500
+                    750
                 );
 
 
@@ -1283,60 +1380,36 @@
 
 
             // =================================================
-            // FIRST MAP DETECTION
+            // NORMAL 10 SECOND CALIBRATION
             // =================================================
 
-            if (
-                currentMap === null &&
-                map !== null
-            ) {
-
-                currentMap =
-                    map;
-
-
-                console.log(
-                    '[VEX] Initial map:',
-                    currentMap
-                );
-
-
-                resetTiming(
-                    year
-                );
-
-
-                buildList();
-
-                return;
-            }
-
-
-            // =================================================
-            // NORMAL CALIBRATION
-            // =================================================
-
-            recordYear(
+            calibrate(
                 year
             );
 
 
-            dot.className =
-                'dot';
+            /*
+             * IMPORTANT:
+             *
+             * calibrate() does NOT modify
+             * anchorTime.
+             *
+             * Therefore the countdown keeps
+             * moving forward continuously.
+             */
 
 
-            buildList();
+            updateDisplay();
 
 
             console.log(
-                '[VEX] Sync:',
-                'map =',
+                '[VEX] Sync | map:',
                 currentMap,
-                '| mapjahr =',
-                year,
-                '| rate =',
+                '| mapjahr:',
+                year.toFixed(3),
+                '| rate:',
                 secondsPerStep.toFixed(2),
-                'sec / 0.001'
+                'sec/.001'
             );
 
         } catch (error) {
@@ -1455,10 +1528,10 @@
 
 
     // =========================================================
-    // 10 SECOND MAPJAHR / MAP CHECK
+    // 10 SECOND SYNCHRONIZATION
     // =========================================================
 
-    const calibrationTimer =
+    const syncTimer =
         setInterval(
             () => {
 
@@ -1471,12 +1544,12 @@
                 }
 
             },
-            CALIBRATION_INTERVAL
+            SYNC_INTERVAL
         );
 
 
     // =========================================================
-    // 1 SECOND DISPLAY TIMER
+    // 1 SECOND COUNTDOWN
     // =========================================================
 
     const displayTimer =
@@ -1497,7 +1570,7 @@
 
 
     // =========================================================
-    // VISIBILITY
+    // TAB BECOMES VISIBLE
     // =========================================================
 
     document.addEventListener(
@@ -1524,18 +1597,13 @@
         () => {
 
             clearInterval(
-                calibrationTimer
+                syncTimer
             );
 
             clearInterval(
                 displayTimer
             );
         }
-    );
-
-
-    console.log(
-        '[VEX NEXT UNITS] Loaded successfully.'
     );
 
 })();
